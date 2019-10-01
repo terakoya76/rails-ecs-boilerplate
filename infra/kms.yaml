@@ -1,0 +1,52 @@
+
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  Alias:
+    Type: String
+    Default: rails_ecs_boilerplate
+
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: kms key
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: allow-root-access-to-key
+        Statement:
+        - Sid: allow-root-to-delegate-actions
+          Effect: Allow
+          Principal:
+            AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+          Action:
+          - kms:*
+          Resource: '*'
+
+  KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${Alias}
+      TargetKeyId: !Ref Key
+
+  RailsSecretKeyBase:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: production_key_base
+      KmsKeyId: !Ref Key
+      Name: !Sub ${AWS::StackName}-secret-key-base
+
+  RailsDatabaseUrl:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: database_url
+      KmsKeyId: !Ref Key
+      Name: !Sub ${AWS::StackName}-database-url
+
+Outputs:
+  RailsSecretKeyBase:
+    Value: !Ref RailsSecretKeyBase
+  RailsDatabaseUrl:
+    Value: !Ref RailsDatabaseUrl
+

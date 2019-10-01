@@ -1,0 +1,17 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  RepoName:
+    Type: String
+    Default: "rails-ecs-boilerplate"
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepoName
+
+Outputs:
+  RepositoryArn:
+    Value: !GetAtt Repository.Arn

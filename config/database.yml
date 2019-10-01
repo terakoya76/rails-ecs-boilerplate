@@ -12,10 +12,11 @@
 default: &default
   adapter: mysql2
   encoding: utf8mb4
+  host: 127.0.0.1
+  port: 3306
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
   username: root
-  password:
-  host: localhost
+  password: root
 
 development:
   <<: *default
@@ -49,6 +50,4 @@ test:
 #
 production:
   <<: *default
-  database: rails_ecs_boilerplate_production
-  username: rails_ecs_boilerplate
-  password: <%= ENV['RAILS_ECS_BOILERPLATE_DATABASE_PASSWORD'] %>
+  url: <%= ENV['DATABASE_URL'] %>

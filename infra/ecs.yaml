@@ -1,0 +1,694 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  #
+  # VPC
+  #
+  VpcName:
+    Type: String
+    Default: rails-ecs-boilerplate-vpc
+
+  VpcCIDR:
+    Type: String
+    Default: 172.50.0.0/24
+
+  Subnet1CIDR:
+    Type: String
+    Default: 172.50.0.0/26
+
+  Subnet2CIDR:
+    Type: String
+    Default: 172.50.0.64/26
+
+  ClusterSize:
+    Type: Number
+    Default: 2
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  #
+  # ECS
+  #
+  KMSKeyArn:
+    Type: String
+
+  SecretKeyBaseSecretArn:
+    Type: String
+
+  DatabaseUrlSecretArn:
+    Type: String
+
+  ECRRepoName:
+    Type: String
+    Default: rails-ecs-boilerplate
+
+  #
+  # RDS
+  #
+  DBInstanceName:
+    Type: String
+    Default: rails-ecs-boilerplate-instance
+
+  MySQLMajorVersion:
+    Type: String
+    Default: 8.0
+
+  MySQLMinorVersion:
+    Type: String
+    Default: 16
+
+  DBInstanceClass:
+    Type: String
+    Default: db.m4.large
+
+  DBInstanceStorageSize:
+    Type: String
+    Default: 30
+
+  DBInstanceStorageType:
+    Type: String
+    Default: gp2
+
+  DBName:
+    Type: String
+    Default: railsecsboilerplatedb
+
+  DBMasterUserName:
+    Type: String
+    Default: dbuser
+    NoEcho: true
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: "must begin with a letter and contain only alphanumeric characters."
+
+  DBPassword:
+    Type: String
+    Default: dbpassword
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: "must contain only alphanumeric characters."
+
+  MultiAZ:
+    Type: String
+    Default: false
+    AllowedValues: [ "true", "false" ]
+
+  #
+  # CICD
+  #
+  GitHubRepo:
+    Type: String
+    Default: rails-ecs-boilerplate
+
+  GitHubBranch:
+    Type: String
+    Default: master
+
+  GitHubToken:
+    Type: String
+    NoEcho: true
+
+  GitHubUser:
+    Type: String
+    Default: terakoya76
+
+Resources:
+  #
+  # VPC
+  #
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Ref Subnet1CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName} (Public)
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Ref Subnet2CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName} (Public)
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  Subnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet1
+
+  Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet2
+
+  #
+  # ELB
+  #
+  SecurityGroupELB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-alb
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "TCP"
+          FromPort: 80
+          ToPort: 80
+      VpcId: !Ref VPC
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroups:
+        - !Ref SecurityGroupELB
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: LoadBalancer
+    Properties:
+      VpcId: !Ref VPC
+      Port: 3000
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /monitor
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+
+  #
+  # ECS
+  #
+  SecurityGroupECS:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-ecs
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SecurityGroupELB
+          IpProtocol: -1
+      VpcId: !Ref VPC
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AWS::StackName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: allow-access-to-kms-key
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - secretsmanager:GetSecretValue
+              - Resource: !Ref KMSKeyArn
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+
+  FargateService:
+    Type: AWS::ECS::Service
+    DependsOn: LoadBalancerListener
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref AppTaskDefinition
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SecurityGroupECS
+          Subnets:
+            - !Ref Subnet1
+            - !Ref Subnet2
+      LoadBalancers:
+        - ContainerName: !Sub ${ECRRepoName}-app
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TargetGroup
+
+  AppTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}
+      RequiresCompatibilities:
+        - FARGATE
+      Memory: 512
+      Cpu: 256
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      ContainerDefinitions:
+        - Name: !Sub ${ECRRepoName}-app
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepoName}:latest
+          Essential: true
+          Memory: 256
+          PortMappings:
+            - ContainerPort: 3000
+          Secrets:
+            - Name: SECRET_KEY_BASE
+              ValueFrom: !Ref SecretKeyBaseSecretArn
+            - Name: DATABASE_URL
+              ValueFrom: !Ref DatabaseUrlSecretArn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: !Sub ${AWS::StackName}-app
+
+  MigrateTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}
+      RequiresCompatibilities:
+        - FARGATE
+      Memory: 512
+      Cpu: 256
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      ContainerDefinitions:
+        - Name: !Sub ${ECRRepoName}-migrate
+          Command:
+            - bundle
+            - ex
+            - rake
+            - "db:migrate"
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepoName}:latest
+          Environment:
+            - Name: RAILS_ENV
+              Value: production
+          Essential: true
+          Memory: 256
+          Secrets:
+            - Name: SECRET_KEY_BASE
+              ValueFrom: !Ref SecretKeyBaseSecretArn
+            - Name: DATABASE_URL
+              ValueFrom: !Ref DatabaseUrlSecretArn
+          LogConfiguration:
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: !Sub ${AWS::StackName}-migrate
+
+  #
+  # RDS
+  #
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${AWS::StackName}-${DBName}"
+      Engine: MySQL
+      EngineVersion: !Sub "${MySQLMajorVersion}.${MySQLMinorVersion}"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBInstanceStorageSize
+      StorageType: !Ref DBInstanceStorageType
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBMasterUserName
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      MultiAZ: !Ref MultiAZ
+      PreferredBackupWindow: "18:00-18:30"
+      PreferredMaintenanceWindow: "sat:19:00-sat:19:30"
+      AutoMinorVersionUpgrade: false
+      DBParameterGroupName: !Ref DBParameterGroup
+      VPCSecurityGroups:
+        - !Ref SecurityGroupRDS
+      CopyTagsToSnapshot: true
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: !Ref DBInstanceName
+    DeletionPolicy: "Delete"
+
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: !Sub "MySQL${MySQLMajorVersion}"
+      Description: !Sub "${AWS::StackName}-${DBName}-parm"
+
+  SecurityGroupRDS:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-hosts
+# Rule
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SecurityGroupECS
+          IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+      VpcId: !Ref VPC
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${AWS::StackName}-${DBName}-subnet"
+      DBSubnetGroupDescription: "-"
+      SubnetIds:
+        - !Ref Subnet1
+        - !Ref Subnet2
+
+  #
+  # Deploy
+  #
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:GetAuthorizationToken
+                  - iam:PassRole
+              # Need to make secure
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - secretsmanager:GetSecretValue
+              - Resource: !Ref KMSKeyArn
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+              - Resource: !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+              - Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AWS::StackName}:*
+                Effect: Allow
+                Action:
+                  - ecs:RunTask
+              - Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ECRRepoName}
+                Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeTasks
+                  - ecs:ListTasks
+                  - ecs:RegisterTaskDefinition
+                  - ecs:UpdateService
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - iam:PassRole
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - $(aws ecr get-login --no-include-email)
+                - TAG="$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
+                - IMAGE_URI="${REPOSITORY_URI}:${TAG}"
+            build:
+              commands:
+                - docker build --tag "$IMAGE_URI" .
+                - docker push "$IMAGE_URI"
+                # migration 用の TaskDefinition の image tag を rotate できてないので毎回 latest を更新
+                - docker tag "$IMAGE_URI" "${REPOSITORY_URI}:latest"
+                - docker push "${REPOSITORY_URI}:latest"
+            post_build:
+              commands:
+                - aws ecs run-task --region "$AWS_DEFAULT_REGION" --cluster "$CLUSTER_NAME" --task-definition "$MIGRATE_TASK_DEF" --launch-type "FARGATE" --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}"
+                - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$IMAGE_URI" > images.json
+          artifacts:
+            files: images.json
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: REPOSITORY_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepoName}
+          - Name: CLUSTER_NAME
+            Value: !Ref Cluster
+          - Name: MIGRATE_TASK_DEF
+            Value: !Ref MigrateTaskDefinition
+          - Name: CONTAINER_NAME
+            Value: "rails-ecs-boilerplate-app"
+          - Name: SECURITY_GROUP
+            Value: !Ref SecurityGroupECS
+          - Name: SUBNETS
+            Value: !Join [ ",", [ !Ref Subnet1, !Ref Subnet2 ] ]
+      Name: !Ref AWS::StackName
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubUser
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: App
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: ECS
+              Configuration:
+                ClusterName: !Ref AWS::StackName
+                ServiceName: !Ref FargateService
+                FileName: images.json
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+Outputs:
+  #
+  # VPC
+  #
+  VpcId:
+    Value: !Ref VPC
+  Subnets:
+    Value: !Join [ ",", [ !Ref Subnet1, !Ref Subnet2 ] ]
+
+  #
+  # ELB
+  #
+  TargetGroup:
+    Value: !Ref TargetGroup
+  ServiceUrl:
+    Description: URL of the load balancer for the sample service.
+    Value: !Sub http://${LoadBalancer.DNSName}
+  SecurityGroupELB:
+    Value: !Ref SecurityGroupELB
+
+  #
+  # ECS
+  #
+  ClusterName:
+    Value: !Ref Cluster
+  Service:
+    Value: !Ref FargateService
+  SecurityGroupECS:
+    Value: !Ref SecurityGroupECS
+
+  #
+  # RDS
+  #
+  DBInstanceID:
+    Value: !Ref DBInstance
+  DBInstanceEndpoint:
+    Value: !GetAtt DBInstance.Endpoint.Address
+  DBName:
+    Value: !Ref DBName
+  SecurityGroupRDS:
+    Value: !Ref SecurityGroupRDS
+
+  #
+  # Deploy
+  #
+  PipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${Pipeline}
